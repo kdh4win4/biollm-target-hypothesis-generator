@@ -1,59 +1,65 @@
 """
-Inference utility for biomedical relation classification.
-
-This version is designed for real-world usage where a NO_RELATION class exists.
-It provides:
-- Full label probability distribution
-- Top-k predicted labels
-- Best non-negative (non-NO_RELATION) label and score
+Inference utility for LoRA-fine-tuned biomedical relation classifier
+with restored label names.
 """
 
 import argparse
+import os
+import json
 from typing import Dict, List, Tuple
 
 import torch
+from safetensors.torch import load_file
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from peft import PeftConfig, PeftModel
 
-from .constants import DEFAULT_BASE_MODEL, DEFAULT_MAX_LENGTH, SEP
+from .constants import DEFAULT_MAX_LENGTH, SEP
+
+
+def _infer_num_labels_from_adapter(model_path: str) -> int:
+    adapter_path = os.path.join(model_path, "adapter_model.safetensors")
+    sd = load_file(adapter_path)
+
+    # key confirmed from your checkpoint
+    return int(sd["base_model.model.classifier.weight"].shape[0])
 
 
 @torch.inference_mode()
 def predict_proba(
-    model_name_or_path: str,
+    model_path: str,
     sentence: str,
     e1: str,
     e2: str,
     device: str = "cpu",
 ) -> Dict[str, float]:
-    """
-    Predict probability distribution over relation labels.
 
-    Parameters
-    ----------
-    model_name_or_path : str
-        Hugging Face model name or local fine-tuned checkpoint path.
-    sentence : str
-        Input sentence/passage containing relation context.
-    e1 : str
-        Entity1 surface form (e.g., disease or drug).
-    e2 : str
-        Entity2 surface form (e.g., gene/protein).
-    device : str
-        "cpu", "cuda", or "mps" (Apple Silicon).
+    # base model name
+    peft_cfg = PeftConfig.from_pretrained(model_path)
+    base_model_name = peft_cfg.base_model_name_or_path
 
-    Returns
-    -------
-    Dict[str, float]
-        Mapping from label -> probability.
-    """
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    model = AutoModelForSequenceClassification.from_pretrained(model_name_or_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+
+    # num_labels from adapter
+    num_labels = _infer_num_labels_from_adapter(model_path)
+
+    base_model = AutoModelForSequenceClassification.from_pretrained(
+        base_model_name,
+        num_labels=num_labels,
+    )
+
+    model = PeftModel.from_pretrained(base_model, model_path)
     model.to(device)
     model.eval()
 
-    # Prompt-like input format (consistent with training)
-    text = f"Sentence: {sentence}{SEP}Entity1: {e1}{SEP}Entity2: {e2}"
+    # load labels.json if exists
+    labels_json = os.path.join(model_path, "labels.json")
+    id2label = None
+    if os.path.exists(labels_json):
+        with open(labels_json, "r") as f:
+            labels = json.load(f)
+        id2label = {i: lab for i, lab in enumerate(labels)}
 
+    text = f"Sentence: {sentence}{SEP}Entity1: {e1}{SEP}Entity2: {e2}"
     enc = tokenizer(
         text,
         truncation=True,
@@ -62,90 +68,52 @@ def predict_proba(
         return_tensors="pt",
     ).to(device)
 
-    logits = model(**enc).logits
-    probs = torch.softmax(logits, dim=-1).squeeze(0)  # shape: [num_labels]
+    probs = torch.softmax(model(**enc).logits, dim=-1).squeeze(0)
 
-    id2label = model.config.id2label
-    return {id2label[i]: float(probs[i].detach().cpu()) for i in range(probs.shape[0])}
+    scores = {}
+    for i in range(probs.shape[0]):
+        label = id2label[i] if id2label else f"LABEL_{i}"
+        scores[label] = float(probs[i].cpu())
+
+    return scores
 
 
-def top_k(scores: Dict[str, float], k: int = 5) -> List[Tuple[str, float]]:
-    """
-    Return top-k labels by probability (descending).
-    """
+def top_k(scores: Dict[str, float], k: int = 5):
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
 
-def best_non_negative(
-    scores: Dict[str, float],
-    negative_label: str = "NO_RELATION",
-) -> Tuple[str, float]:
-    """
-    Return the best label excluding the negative label (NO_RELATION).
-
-    If all labels are negative or only one label exists, returns (negative_label, score).
-    """
-    if negative_label not in scores:
-        # If the model doesn't have NO_RELATION, just return best overall.
-        best = max(scores.items(), key=lambda x: x[1])
-        return best[0], best[1]
-
-    filtered = [(k, v) for k, v in scores.items() if k != negative_label]
-    if not filtered:
-        return negative_label, float(scores.get(negative_label, 0.0))
-
-    best = max(filtered, key=lambda x: x[1])
-    return best[0], best[1]
+def best_non_negative(scores: Dict[str, float], negative_label="NO_RELATION"):
+    items = [(k, v) for k, v in scores.items() if k != negative_label]
+    return max(items, key=lambda x: x[1]) if items else max(scores.items(), key=lambda x: x[1])
 
 
-def format_sorted(scores: Dict[str, float]) -> str:
-    """
-    Pretty-print all label probabilities in descending order.
-    """
-    items = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    lines = [f"{label:>25s}  {p:.4f}" for label, p in items]
-    return "\n".join(lines)
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--model", required=True)
+    p.add_argument("--sentence", required=True)
+    p.add_argument("--e1", required=True)
+    p.add_argument("--e2", required=True)
+    p.add_argument("--device", default="cpu")
+    p.add_argument("--topk", type=int, default=7)
+    p.add_argument("--show_all", action="store_true")
+    args = p.parse_args()
 
+    scores = predict_proba(args.model, args.sentence, args.e1, args.e2, args.device)
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Relation classification inference.")
-    parser.add_argument("--model", type=str, default=DEFAULT_BASE_MODEL,
-                        help="HF model name or fine-tuned checkpoint path.")
-    parser.add_argument("--sentence", type=str, required=True, help="Input sentence/passage.")
-    parser.add_argument("--e1", type=str, required=True, help="Entity1 string.")
-    parser.add_argument("--e2", type=str, required=True, help="Entity2 string.")
-    parser.add_argument("--device", type=str, default="cpu",
-                        help='cpu | cuda | mps (Apple Silicon).')
-    parser.add_argument("--topk", type=int, default=5, help="Show top-k labels.")
-    parser.add_argument("--negative_label", type=str, default="NO_RELATION",
-                        help="Name of the negative class.")
-    parser.add_argument("--show_all", action="store_true",
-                        help="If set, print all label probabilities.")
-    args = parser.parse_args()
+    print("\nTop predictions:")
+    for k, v in top_k(scores, args.topk):
+        print(f"{k:>25s}  {v:.4f}")
 
-    scores = predict_proba(
-        model_name_or_path=args.model,
-        sentence=args.sentence,
-        e1=args.e1,
-        e2=args.e2,
-        device=args.device,
-    )
+    k, v = best_non_negative(scores)
+    print("\nBest non-negative:")
+    print(f"{k:>25s}  {v:.4f}")
 
-    # 1) Top-k overall (including NO_RELATION)
-    print("\nTop predictions (including NO_RELATION):")
-    for label, p in top_k(scores, k=args.topk):
-        print(f"{label:>25s}  {p:.4f}")
-
-    # 2) Best non-negative label (excluding NO_RELATION)
-    best_label, best_score = best_non_negative(scores, negative_label=args.negative_label)
-    print("\nBest non-negative prediction (excluding NO_RELATION):")
-    print(f"{best_label:>25s}  {best_score:.4f}")
-
-    # 3) Optional: show full distribution
     if args.show_all:
-        print("\nAll label probabilities (sorted):")
-        print(format_sorted(scores))
+        print("\nAll:")
+        for k, v in sorted(scores.items(), key=lambda x: x[1], reverse=True):
+            print(f"{k:>25s}  {v:.4f}")
 
 
 if __name__ == "__main__":
     main()
+
