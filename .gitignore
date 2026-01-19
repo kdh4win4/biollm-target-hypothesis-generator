@@ -1,0 +1,4 @@
+outputs/
+*.tar.gz
+*.pt
+*.pth
