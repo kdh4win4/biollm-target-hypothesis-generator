@@ -110,19 +110,19 @@ def main(
     test_raw = load_chemprot_bigbio("test")
 
     # Convert KB schema -> positive pair examples (MVP)
-train_examples = kb_to_pair_examples_with_negatives(
-    train_raw,
-    negative_label="NO_RELATION",
-    neg_pos_ratio=1.0,   # start with 1:1 negatives:positives
-    seed=42,
-)
+    train_examples = kb_to_pair_examples_with_negatives(
+        train_raw,
+        negative_label="NO_RELATION",
+        neg_pos_ratio=1.0,   # start with 1:1 negatives:positives
+        seed=42,
+    )
 
-test_examples = kb_to_pair_examples_with_negatives(
-    test_raw,
-    negative_label="NO_RELATION",
-    neg_pos_ratio=1.0,   # keep evaluation consistent
-    seed=42,
-)
+    test_examples = kb_to_pair_examples_with_negatives(
+        test_raw,
+        negative_label="NO_RELATION",
+        neg_pos_ratio=1.0,   # keep evaluation consistent
+        seed=42,
+    )
 
 
     # Build label space from training data
