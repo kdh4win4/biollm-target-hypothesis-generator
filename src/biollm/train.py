@@ -29,7 +29,7 @@ from transformers import (
 from peft import LoraConfig, TaskType, get_peft_model
 
 from .constants import DEFAULT_BASE_MODEL, DEFAULT_MAX_LENGTH, SEP
-from .data import kb_to_positive_pair_examples, load_chemprot_bigbio
+from .data import kb_to_pair_examples_with_negatives, load_chemprot_bigbio
 
 
 def _build_hf_dataset(examples, label2id: Dict[str, int]) -> Dataset:
@@ -110,8 +110,20 @@ def main(
     test_raw = load_chemprot_bigbio("test")
 
     # Convert KB schema -> positive pair examples (MVP)
-    train_examples = kb_to_positive_pair_examples(train_raw)
-    test_examples = kb_to_positive_pair_examples(test_raw)
+train_examples = kb_to_pair_examples_with_negatives(
+    train_raw,
+    negative_label="NO_RELATION",
+    neg_pos_ratio=1.0,   # start with 1:1 negatives:positives
+    seed=42,
+)
+
+test_examples = kb_to_pair_examples_with_negatives(
+    test_raw,
+    negative_label="NO_RELATION",
+    neg_pos_ratio=1.0,   # keep evaluation consistent
+    seed=42,
+)
+
 
     # Build label space from training data
     labels = sorted(list({ex.label for ex in train_examples}))
