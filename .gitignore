@@ -2,3 +2,7 @@ outputs/
 *.tar.gz
 *.pt
 *.pth
+
+.venv/
+outputs/
+*.tar.gz
