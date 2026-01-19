@@ -169,7 +169,7 @@ def main(
 
     training_args = TrainingArguments(
         output_dir=output_dir,
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
         learning_rate=lr,
         per_device_train_batch_size=16,
