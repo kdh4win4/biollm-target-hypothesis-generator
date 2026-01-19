@@ -16,6 +16,10 @@ Automated relation extraction accelerates:
 - Fine-tunes PubMedBERT for **relation classification**
 - Provides a simple inference CLI to score candidate relations
 
+### Target hypothesis demo
+This repo can generate a ranked target list from disease-related sentences,
+simulating AI-driven target discovery.
+
 ## Quickstart
 ```bash
 python -m venv .venv
